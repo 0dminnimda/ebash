@@ -2,18 +2,21 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from enum import Enum
 
-import sys
 import shlex
 import subprocess
-from subprocess import Popen
+import sys
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from typing import (
-    TypeVar,
-    Iterable,
-    Dict,
-    NamedTuple,
-    Generator,
-)
+from enum import Enum
+from subprocess import Popen
+from typing import Dict, Generator, Iterable, NamedTuple, TypeVar, overload
+
+
+class StdinType(Enum):
+    NOINPUT = 0
+    STDOUT = 1
+    STDERR = 2
+    PIPE = 3
 
 
 T1 = TypeVar("T1")
@@ -22,13 +25,6 @@ T2 = TypeVar("T2")
 
 Args = Iterable[T1]
 Kwargs = Dict[str, T2]
-
-
-class StdinType(Enum):
-    NOINPUT = 0
-    STDOUT = 1
-    STDERR = 2
-    PIPE = 3
 
 
 class PopenArgs(NamedTuple):
@@ -239,32 +235,81 @@ class Shell:
         return sys.argv[index]
 
 
+@dataclass
+class FancyShell(Shell):
+    def fancy_reset(self) -> FancyShell:
+        return self
+
+    @overload
+    def __or__(self, other: str) -> FancyShell:
+        ...
+
+    @overload
+    def __or__(self, other: FancyShell) -> str:
+        ...
+
+    def __or__(self, other):
+        if isinstance(other, str):
+            # one of the pipes
+            self.pipe(other)
+            return self
+        if isinstance(other, type(self)):
+            # everything is done, clean up if the last was a pipe
+            self.fancy_reset()
+            return self.output
+        return NotImplemented
+
+    def __matmul__(self, other: str) -> FancyShell:
+        # the last one
+        self.run(other)
+        return self.fancy_reset()
+
+    def __rmatmul__(self, other: str) -> FancyShell:
+        # the last one
+        self.run(other)
+        return self.fancy_reset()
+
+    def __rrshift__(self, other: str) -> FancyShell:
+        self.input(other)
+        return self
+
+
 if __name__ == "__main__":
+    fs = FancyShell()
     shell = Shell()
     print(shell)
     exe = sys.executable
 
     # echo "Hello world!"
     shell.run('echo "Hello world!"')
+    fs | 'echo "Hello world!"' @ fs
+    fs @ 'echo "Hello world!"'
 
     # echo "SoMe WeIrd DaTa" | sha256sum
     shell.pipe('echo "SoMe WeIrd DaTa"').run("sha256sum")
+    fs | 'echo "Hello world!"' | "sha256sum" @ fs
 
     # sha256sum <<< "SoMe WeIrd DaTa"
     shell.input("SoMe WeIrd DaTa").run("sha256sum")
+    "SoMe WeIrd DaTa" >> fs | "sha256sum" @ fs
+    ("SoMe WeIrd DaTa" >> fs) @ "sha256sum"  # if you use input + direct run you need prentices
 
     # DATA_HASH=$(echo "SoMe WeIrd DaTa" | sha256sum)
     # or DATA_HASH=$(sha256sum <<< "SoMe WeIrd DaTa")
     data_hash = shell.input("SoMe WeIrd DaTa").pipe("sha256sum").output
+    data_hash2 = "SoMe WeIrd DaTa" >> fs | "sha256sum" | fs
 
     # echo "Hash - $DATA_HASH"
     print(f"Hash - {data_hash}")
+    print(f"Hash - {data_hash2}")
 
     # false || echo "It failed"
     shell.run("false") or print("It failed")
+    fs @ ("false") or print("It failed")
 
     # true && echo "So true!"
     shell.run("true") and print("So true!")
+    fs @ "true" and print("So true!")
 
     # false; echo $?
     print(shell.run("false").return_code)
@@ -293,7 +338,7 @@ if __name__ == "__main__":
 import time
 for i in range(5):
     print(f'Hi-{i}, sent {time.time()}')
-    time.sleep(0.75)
+    time.sleep(0.5)
     """
 
     echoer = """
@@ -306,14 +351,21 @@ for _ in range(5):
     # no buffering while piping fow arbitrary number of pipes
     # python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1
     shell.pipe(f'{exe} -u -c "{generator}"').run(f'{exe} -c "{echoer}" 1')
+    fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' @ fs
 
     # python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1 | python3.9 -c "$ECHOER" 2
     shell.pipe(f'{exe} -u -c "{generator}"').pipe(f'{exe} -c "{echoer}" 1').run(f'{exe} -c "{echoer}" 2')  # fmt: skip
+    fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' | f'{exe} -c "{echoer}" 2' @ fs
 
     # read from the stdout by character
     # (I don't want to think about how to implement it in bash)
     shell.pipe(f'{exe} -u -c "{generator}"')
     with shell.inject() as process:
+        while r := process.stdout.read(1):
+            print(end=" " + r)
+        print("End!")
+    fs | f'{exe} -u -c "{generator}"'
+    with fs.inject() as process:
         while r := process.stdout.read(1):
             print(end=" " + r)
         print("End!")
@@ -326,5 +378,7 @@ print('Out')
 
     # python3 -c "$STD_OUT_N_ERR" 2>&1
     shell.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
+    # currently now possible with fancy shell syntax
+    fs.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
 
-    # UPD: Don't buffer pipes, add steam moves, make attrs properties
+    # UPD: Add a fancy syntactic shell class
