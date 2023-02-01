@@ -1,4 +1,6 @@
-from shell import Shell
+import sys
+
+from shell import Shell, FancyShell
 
 fs = FancyShell()
 shell = Shell()
@@ -12,7 +14,7 @@ fs @ 'echo "Hello world!"'
 
 # echo "SoMe WeIrd DaTa" | sha256sum
 shell.pipe('echo "SoMe WeIrd DaTa"').run("sha256sum")
-fs | 'echo "Hello world!"' | "sha256sum" @ fs
+fs | 'echo "SoMe WeIrd DaTa"' | "sha256sum" @ fs
 
 # sha256sum <<< "SoMe WeIrd DaTa"
 shell.input("SoMe WeIrd DaTa").run("sha256sum")
@@ -62,15 +64,15 @@ else:
 generator = """
 import time
 for i in range(5):
-print(f'Hi-{i}, sent {time.time()}')
-time.sleep(0.5)
+    print(f'Hi-{i}, sent {time.time()}')
+    time.sleep(0.5)
 """
 
 echoer = """
 import sys
 import time
 for _ in range(5):
-print(f'Echoer-{sys.argv[1]} got {input()!r} at {time.time()}')
+    print(f'Echoer-{sys.argv[1]} got {input()!r} at {time.time()}')
 """
 
 # no buffering while piping fow arbitrary number of pipes
@@ -105,6 +107,3 @@ print('Out')
 shell.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
 # currently now possible with fancy shell syntax
 fs.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
-
-# UPD: Add a fancy syntactic shell class
-
