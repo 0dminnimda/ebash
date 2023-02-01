@@ -1,6 +1,4 @@
 from __future__ import annotations
-from contextlib import ExitStack, contextmanager
-from enum import Enum
 
 import shlex
 import subprocess
@@ -9,7 +7,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from subprocess import Popen
-from typing import Dict, Generator, Iterable, NamedTuple, TypeVar, overload
+from typing import Dict, Iterable, Iterator, NamedTuple, TypeVar, overload
 
 
 class StdinType(Enum):
@@ -34,6 +32,84 @@ class PopenArgs(NamedTuple):
     input: str | None = None
 
 
+@dataclass
+class Executor(ExitStack):
+    return_code: int = field(default=0, init=False)
+    stdout: str | None = field(default=None, init=False)
+    stderr: str | None = field(default=None, init=False)
+    _processes: list[Popen] = field(default_factory=list, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        super().__init__()
+
+    def reset(self) -> None:
+        if len(self._processes) != 0:
+            self.close()
+        self.return_code = 0
+        self.stdout = None
+        self.stderr = None
+        self._processes = []
+
+    def execute(self, params: list[PopenArgs], input: str | None = None) -> Executor:
+        if len(params) == 0:
+            raise ValueError(
+                "No parameters were found, you should supply at least one parameter"
+            )
+
+        self.reset()
+        processes = self._processes
+
+        stdin, args, kwargs, _ = params[0]
+        if stdin == StdinType.PIPE:
+            kwargs["stdin"] = subprocess.PIPE
+        processes.append(self.enter_context(Popen(*args, **kwargs)))
+
+        for stdin, args, kwargs, _ in params[1:]:
+            if stdin == StdinType.STDOUT:
+                kwargs["stdin"] = processes[-1].stdout
+            elif stdin == StdinType.STDERR:
+                kwargs["stdin"] = processes[-1].stderr
+
+            processes.append(self.enter_context(Popen(*args, **kwargs)))
+
+        if processes[0].stdin:
+            processes[0]._stdin_write(params[0].input)  # type: ignore[attr-defined]
+        return self
+
+    __call__ = execute
+
+    def __enter__(self):
+        return super().__enter__()
+
+    def __exit__(self, *exc_details):
+        try:
+            if self._processes[-1].stdout:
+                self.stdout = self._processes[-1].stdout.read()
+                self._processes[-1].stdout.close()
+            elif self._processes[-1].stderr:
+                self.stderr = self._processes[-1].stderr.read()
+                self._processes[-1].stderr.close()
+            self._processes[-1].wait()
+        except:  # noqa # Including KeyboardInterrupt, communicate handled that.
+            for process in self._processes:
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+            raise
+
+        self.return_code = self._processes[-1].poll() or 0
+
+        # XXX: should this condition be here?
+        # should executor also try to imitate shell and not just wrap subprocess?
+        if self.stdout and self.stdout.endswith("\n"):
+            self.stdout = self.stdout[:-1]
+
+        self._processes.clear()
+        return super().__exit__(*exc_details)
+
+    def close(self) -> None:
+        super().close()
+
+
 @dataclass(repr=False)
 class Shell:
     """
@@ -43,11 +119,9 @@ class Shell:
     Author: 0dminnimda
     """
 
-    _return_code: int = field(default=0, init=False)
-    _stdout: str | None = field(default=None, init=False)
-    _stderr: str | None = field(default=None, init=False)
-    _input: str | None = field(default=None, init=False)
-    _args: list[PopenArgs] = field(default_factory=list, init=False)
+    _executor: Executor = field(default_factory=Executor, init=False, repr=False)
+    _input: str | None = field(default=None, init=False, repr=False)
+    _args: list[PopenArgs] = field(default_factory=list, init=False, repr=False)
 
     def __repr__(self) -> str:
         names = ["return_code", "stdout", "stderr"]
@@ -57,17 +131,17 @@ class Shell:
     @property
     def return_code(self):
         self.execute()
-        return self._return_code
+        return self._executor.return_code
 
     @property
     def stdout(self):
         self.execute()
-        return self._stdout
+        return self._executor.stdout
 
     @property
     def stderr(self):
         self.execute()
-        return self._stderr
+        return self._executor.stderr
 
     @property
     def output(self) -> str:
@@ -85,88 +159,16 @@ class Shell:
         return bool(self)
 
     def execute(self) -> Shell:
-        if len(self._args) < 1:
-            return self
-
-        for _ in self._inject():
-            pass
+        if self._args:
+            self._executor(self._args).close()
+            self._args.clear()
         return self
 
     @contextmanager
-    def inject(self) -> Generator[Popen, None, None]:
-        yield from self._inject()
-
-    def _inject(self) -> Generator[Popen, None, None]:
-        if len(self._args) < 1:
-            assert False, "No commands were found"
-
-        with ExitStack() as stack:
-            stdin, args, kwargs, _ = self._args[0]
-            if stdin == StdinType.PIPE:
-                kwargs["stdin"] = subprocess.PIPE
-            processes = [stack.enter_context(Popen(*args, **kwargs))]
-
-            for stdin, args, kwargs, _ in self._args[1:]:
-                if stdin == StdinType.STDOUT:
-                    kwargs["stdin"] = processes[-1].stdout
-                elif stdin == StdinType.STDERR:
-                    kwargs["stdin"] = processes[-1].stderr
-
-                processes.append(stack.enter_context(Popen(*args, **kwargs)))
-
-            if processes[0].stdin:
-                processes[0]._stdin_write(  # type: ignore[attr-defined]
-                    self._args[0].input
-                )
+    def inject(self) -> Iterator[Popen]:
+        with self._executor(self._args):
             self._args.clear()
-            yield processes[-1]
-            self._multiple_communicate(processes)
-
-        if self._stdout and self._stdout.endswith("\n"):
-            self._stdout = self._stdout[:-1]
-
-    def _multiple_communicate(self, processes: list[Popen]) -> None:
-        try:
-            if processes[-1].stdout:
-                self._stdout = processes[-1].stdout.read()
-                processes[-1].stdout.close()
-            elif processes[-1].stderr:
-                self._stderr = processes[-1].stderr.read()
-                processes[-1].stderr.close()
-            processes[-1].wait()
-        except:  # noqa # Including KeyboardInterrupt, communicate handled that.
-            for process in processes:
-                process.kill()
-                # We don't call process.wait() as .__exit__ does that for us.
-            raise
-        self._return_code = processes[-1].poll() or 0
-
-    def _communicate(
-        self, process: Popen, input: str | None = None, timeout=None
-    ) -> None:
-        # uses cpython implementation of subprocess.run
-        # noqa # SEE: https://github.com/python/cpython/blob/faf8068dd01c8eee7f6ea3f9e608126bf2034dc1/Lib/subprocess.py#L506
-        try:
-            self._stdout, self._stderr = process.communicate(input, timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            if subprocess._mswindows:  # type: ignore[attr-defined]
-                # Windows accumulates the output in a single blocking
-                # read() call run on child threads, with the timeout
-                # being done in a join() on those threads.  communicate()
-                # _after_ kill() is required to collect that and add it
-                # to the exception.
-                exc.stdout, exc.stderr = process.communicate()
-            else:
-                # POSIX _communicate already populated the output so
-                # far into the TimeoutExpired exception.
-                process.wait()
-            raise
-        except:  # noqa # Including KeyboardInterrupt, communicate handled that.
-            process.kill()
-            # We don't call process.wait() as .__exit__ does that for us.
-            raise
-        self._return_code = process.poll() or 0
+            yield self._executor._processes[-1]
 
     def _add_args(
         self,
@@ -274,111 +276,3 @@ class FancyShell(Shell):
         return self
 
 
-if __name__ == "__main__":
-    fs = FancyShell()
-    shell = Shell()
-    print(shell)
-    exe = sys.executable
-
-    # echo "Hello world!"
-    shell.run('echo "Hello world!"')
-    fs | 'echo "Hello world!"' @ fs
-    fs @ 'echo "Hello world!"'
-
-    # echo "SoMe WeIrd DaTa" | sha256sum
-    shell.pipe('echo "SoMe WeIrd DaTa"').run("sha256sum")
-    fs | 'echo "Hello world!"' | "sha256sum" @ fs
-
-    # sha256sum <<< "SoMe WeIrd DaTa"
-    shell.input("SoMe WeIrd DaTa").run("sha256sum")
-    "SoMe WeIrd DaTa" >> fs | "sha256sum" @ fs
-    ("SoMe WeIrd DaTa" >> fs) @ "sha256sum"  # if you use input + direct run you need prentices
-
-    # DATA_HASH=$(echo "SoMe WeIrd DaTa" | sha256sum)
-    # or DATA_HASH=$(sha256sum <<< "SoMe WeIrd DaTa")
-    data_hash = shell.input("SoMe WeIrd DaTa").pipe("sha256sum").output
-    data_hash2 = "SoMe WeIrd DaTa" >> fs | "sha256sum" | fs
-
-    # echo "Hash - $DATA_HASH"
-    print(f"Hash - {data_hash}")
-    print(f"Hash - {data_hash2}")
-
-    # false || echo "It failed"
-    shell.run("false") or print("It failed")
-    fs @ ("false") or print("It failed")
-
-    # true && echo "So true!"
-    shell.run("true") and print("So true!")
-    fs @ "true" and print("So true!")
-
-    # false; echo $?
-    print(shell.run("false").return_code)
-
-    # if [[ $1 ]]; then
-    #     exit 2
-    # else
-    #     echo "Running!"
-    #     $0 argument
-    #     echo "Result - $?"
-    # fi
-    if shell.argv(1):
-        exit(2)
-    else:
-        print("Running!")
-        shell.run(f"'{exe}' {shell.argv(0)} argument")
-        print(f"Result - {shell.return_code}")
-
-    # do_something_that_takes_a_lot_of_time & do_other_thing
-    # parallel execution is currently not implemented
-
-    # (cd somewhere/else)
-    # spawning subshells is also not implemented
-
-    generator = """
-import time
-for i in range(5):
-    print(f'Hi-{i}, sent {time.time()}')
-    time.sleep(0.5)
-    """
-
-    echoer = """
-import sys
-import time
-for _ in range(5):
-    print(f'Echoer-{sys.argv[1]} got {input()!r} at {time.time()}')
-    """
-
-    # no buffering while piping fow arbitrary number of pipes
-    # python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1
-    shell.pipe(f'{exe} -u -c "{generator}"').run(f'{exe} -c "{echoer}" 1')
-    fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' @ fs
-
-    # python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1 | python3.9 -c "$ECHOER" 2
-    shell.pipe(f'{exe} -u -c "{generator}"').pipe(f'{exe} -c "{echoer}" 1').run(f'{exe} -c "{echoer}" 2')  # fmt: skip
-    fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' | f'{exe} -c "{echoer}" 2' @ fs
-
-    # read from the stdout by character
-    # (I don't want to think about how to implement it in bash)
-    shell.pipe(f'{exe} -u -c "{generator}"')
-    with shell.inject() as process:
-        while r := process.stdout.read(1):
-            print(end=" " + r)
-        print("End!")
-    fs | f'{exe} -u -c "{generator}"'
-    with fs.inject() as process:
-        while r := process.stdout.read(1):
-            print(end=" " + r)
-        print("End!")
-
-    std_out_n_err = """
-import sys
-print('Err', file=sys.stderr)
-print('Out')
-    """
-
-    # python3 -c "$STD_OUT_N_ERR" 2>&1
-    shell.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
-    # currently now possible with fancy shell syntax
-    fs.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
-
-    # UPD: Add a fancy syntactic shell class
