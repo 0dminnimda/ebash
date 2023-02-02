@@ -25,7 +25,8 @@ Args = Iterable[T1]
 Kwargs = Dict[str, T2]
 
 
-class PopenArgs(NamedTuple):
+@dataclass
+class PopenArgs:
     stdin: StdinType
     args: Args
     kwargs: Kwargs
@@ -50,8 +51,10 @@ class Executor(ExitStack):
         self.stderr = None
         self._processes = []
 
-    def execute(self, params: list[PopenArgs], input: str | None = None) -> Executor:
-        if len(params) == 0:
+    def execute(
+        self, params_list: list[PopenArgs], input: str | None = None
+    ) -> Executor:
+        if len(params_list) == 0:
             raise ValueError(
                 "No parameters were found, you should supply at least one parameter"
             )
@@ -59,21 +62,21 @@ class Executor(ExitStack):
         self.reset()
         processes = self._processes
 
-        stdin, args, kwargs, _ = params[0]
-        if stdin == StdinType.PIPE:
-            kwargs["stdin"] = subprocess.PIPE
-        processes.append(self.enter_context(Popen(*args, **kwargs)))
+        params0 = params_list[0]
+        if params0.stdin == StdinType.PIPE:
+            params0.kwargs["stdin"] = subprocess.PIPE
+        processes.append(self.enter_context(Popen(*params0.args, **params0.kwargs)))
 
-        for stdin, args, kwargs, _ in params[1:]:
-            if stdin == StdinType.STDOUT:
-                kwargs["stdin"] = processes[-1].stdout
-            elif stdin == StdinType.STDERR:
-                kwargs["stdin"] = processes[-1].stderr
+        for params in params_list[1:]:
+            if params.stdin == StdinType.STDOUT:
+                params.kwargs["stdin"] = processes[-1].stdout
+            elif params.stdin == StdinType.STDERR:
+                params.kwargs["stdin"] = processes[-1].stderr
 
-            processes.append(self.enter_context(Popen(*args, **kwargs)))
+            processes.append(self.enter_context(Popen(*params.args, **params.kwargs)))
 
         if processes[0].stdin:
-            processes[0]._stdin_write(params[0].input)  # type: ignore[attr-defined]
+            processes[0]._stdin_write(params0.input)  # type: ignore[attr-defined]
         return self
 
     __call__ = execute
@@ -178,19 +181,6 @@ class Shell:
         fallback_stdout: int | None = None,
         fallback_stderr: int | None = None,
     ) -> PopenArgs:
-        stdin = StdinType.NOINPUT
-        if self._args:
-            prev_stdout = self._args[-1].kwargs.get("stdout")
-            prev_stderr = self._args[-1].kwargs.get("stderr")
-
-            if prev_stderr in (subprocess.PIPE, None) and stderr_as_stdin:
-                self._args[-1].kwargs["stderr"] = subprocess.PIPE
-                stdin = StdinType.STDERR
-            elif prev_stderr == subprocess.STDOUT or prev_stdout == subprocess.PIPE:
-                stdin = StdinType.STDOUT
-        elif self._input is not None:
-            stdin = StdinType.PIPE
-
         kwargs: Kwargs = dict(
             stdout=fallback_stdout,
             stderr=subprocess.STDOUT if stderr_to_stdout else fallback_stderr,
@@ -198,8 +188,23 @@ class Shell:
             encoding="utf-8",
             text=True,
         )
-        args = PopenArgs(stdin, (shlex.split(command),), kwargs, self._input)
-        self._input = None
+        args = PopenArgs(
+            StdinType.NOINPUT, (shlex.split(command),), kwargs, self._input
+        )
+
+        if self._args:
+            prev_stdout = self._args[-1].kwargs.get("stdout")
+            prev_stderr = self._args[-1].kwargs.get("stderr")
+
+            if prev_stderr in (subprocess.PIPE, None) and stderr_as_stdin:
+                self._args[-1].kwargs["stderr"] = subprocess.PIPE
+                args.stdin = StdinType.STDERR
+            elif prev_stderr == subprocess.STDOUT or prev_stdout == subprocess.PIPE:
+                args.stdin = StdinType.STDOUT
+        elif self._input is not None:
+            args.stdin = StdinType.PIPE
+            self._input = None
+
         self._args.append(args)
         return args
 
@@ -274,5 +279,3 @@ class FancyShell(Shell):
     def __rrshift__(self, other: str) -> FancyShell:
         self.input(other)
         return self
-
-
