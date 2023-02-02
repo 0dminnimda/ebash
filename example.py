@@ -5,7 +5,7 @@ from shell import Shell, FancyShell
 fs = FancyShell()
 shell = Shell()
 print(shell)
-exe = sys.executable
+exe = repr(sys.executable)
 
 # echo "Hello world!"
 shell.run('echo "Hello world!"')
