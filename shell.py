@@ -7,14 +7,14 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from subprocess import Popen
-from typing import Dict, Iterable, Iterator, NamedTuple, TypeVar, overload
+from typing import Dict, Iterable, Iterator, TypeVar
 
 
-class StdinType(Enum):
-    NOINPUT = 0
-    STDOUT = 1
-    STDERR = 2
-    PIPE = 3
+class Stream(Enum):
+    PIPE = subprocess.PIPE
+    STDOUT = subprocess.STDOUT
+    STDERR = min(subprocess.PIPE, subprocess.STDOUT, subprocess.DEVNULL) - 1
+    DEVNULL = subprocess.DEVNULL
 
 
 T1 = TypeVar("T1")
@@ -25,12 +25,16 @@ Args = Iterable[T1]
 Kwargs = Dict[str, T2]
 
 
+# TODO: use param or something like that,
+# I don't like the "args" name clash
+# XXX: use dict so ot's easier to set kwargs
 @dataclass
 class PopenArgs:
-    stdin: StdinType
     args: Args
+    stdin: Stream | None
+    stdout: Stream
+    stderr: Stream
     kwargs: Kwargs
-    input: str | None = None
 
 
 @dataclass
@@ -51,6 +55,25 @@ class Executor(ExitStack):
         self.stderr = None
         self._processes = []
 
+    def prepare_params(self, params: PopenArgs) -> tuple[Args, Kwargs]:
+        stdin: object = None if params.stdin is None else params.stdin
+        stdout: object = None if params.stdout == Stream.STDOUT else params.stdout
+        stderr: object = None if params.stderr == Stream.STDERR else params.stderr
+
+        stdin = stdin.value if isinstance(stdin, Stream) else stdin
+        stdout = stdout.value if isinstance(stdout, Stream) else stdout
+        stderr = stderr.value if isinstance(stderr, Stream) else stderr
+
+        if "stdin" not in params.kwargs:
+            params.kwargs.update(stdin=stdin)
+        params.kwargs.update(stdout=stdout)
+        params.kwargs.update(stderr=stderr)
+        return params.args, params.kwargs
+
+    def make_popen(self, params: PopenArgs) -> Popen:
+        args, kwargs = self.prepare_params(params)
+        return self.enter_context(Popen(*args, **kwargs))
+
     def execute(
         self, params_list: list[PopenArgs], input: str | None = None
     ) -> Executor:
@@ -58,25 +81,28 @@ class Executor(ExitStack):
             raise ValueError(
                 "No parameters were found, you should supply at least one parameter"
             )
-
         self.reset()
-        processes = self._processes
 
-        params0 = params_list[0]
-        if params0.stdin == StdinType.PIPE:
-            params0.kwargs["stdin"] = subprocess.PIPE
-        processes.append(self.enter_context(Popen(*params0.args, **params0.kwargs)))
+        params = params_list[0]
+        if input is not None and params.stdin != Stream.PIPE:
+            raise ValueError("To have an input the first stdin should be Stream.PIPE")
+        self._processes.append(self.make_popen(params))
 
         for params in params_list[1:]:
-            if params.stdin == StdinType.STDOUT:
-                params.kwargs["stdin"] = processes[-1].stdout
-            elif params.stdin == StdinType.STDERR:
-                params.kwargs["stdin"] = processes[-1].stderr
+            if params.stdin == Stream.STDOUT:
+                params.kwargs["stdin"] = self._processes[-1].stdout
+            elif params.stdin == Stream.STDERR:
+                params.kwargs["stdin"] = self._processes[-1].stderr
+            elif params.stdin == Stream.DEVNULL:
+                params.kwargs["stdin"] = params.stdin.value
+            else:
+                raise ValueError(
+                    f"Invalid stdin for piped operation[{params.args}]: {params.stdin}"
+                )
+            self._processes.append(self.make_popen(params))
 
-            processes.append(self.enter_context(Popen(*params.args, **params.kwargs)))
-
-        if processes[0].stdin:
-            processes[0]._stdin_write(params0.input)  # type: ignore[attr-defined]
+        if self._processes[0].stdin:
+            self._processes[0]._stdin_write(input)  # type: ignore[attr-defined]
         return self
 
     __call__ = execute
@@ -113,6 +139,9 @@ class Executor(ExitStack):
         super().close()
 
 
+RUN = object()
+
+
 @dataclass(repr=False)
 class Shell:
     """
@@ -133,17 +162,20 @@ class Shell:
 
     @property
     def return_code(self):
-        self.execute()
+        self.pipe(fail=False)
+        self.run()
         return self._executor.return_code
 
     @property
     def stdout(self):
-        self.execute()
+        self.pipe(fail=False)
+        self.run()
         return self._executor.stdout
 
     @property
     def stderr(self):
-        self.execute()
+        self.pipe(fail=False)
+        self.run()
         return self._executor.stderr
 
     @property
@@ -161,121 +193,152 @@ class Shell:
     def succeeded(self) -> bool:
         return bool(self)
 
-    def execute(self) -> Shell:
-        if self._args:
-            self._executor(self._args).close()
-            self._args.clear()
-        return self
-
-    @contextmanager
-    def inject(self) -> Iterator[Popen]:
-        with self._executor(self._args):
-            self._args.clear()
-            yield self._executor._processes[-1]
-
-    def _add_args(
-        self,
-        command: str,
-        stderr_to_stdout: bool = False,
-        stderr_as_stdin: bool = False,
-        fallback_stdout: int | None = None,
-        fallback_stderr: int | None = None,
-    ) -> PopenArgs:
-        kwargs: Kwargs = dict(
-            stdout=fallback_stdout,
-            stderr=subprocess.STDOUT if stderr_to_stdout else fallback_stderr,
-            stdin=None,
-            encoding="utf-8",
-            text=True,
-        )
-        args = PopenArgs(
-            StdinType.NOINPUT, (shlex.split(command),), kwargs, self._input
-        )
-
-        if self._args:
-            prev_stdout = self._args[-1].kwargs.get("stdout")
-            prev_stderr = self._args[-1].kwargs.get("stderr")
-
-            if prev_stderr in (subprocess.PIPE, None) and stderr_as_stdin:
-                self._args[-1].kwargs["stderr"] = subprocess.PIPE
-                args.stdin = StdinType.STDERR
-            elif prev_stderr == subprocess.STDOUT or prev_stdout == subprocess.PIPE:
-                args.stdin = StdinType.STDOUT
-        elif self._input is not None:
-            args.stdin = StdinType.PIPE
-            self._input = None
-
-        self._args.append(args)
-        return args
-
-    def run(self, command: str, stderr_to_stdout: bool = False) -> Shell:
-        self._add_args(command, stderr_to_stdout=stderr_to_stdout)
-        return self.execute()
-
-    def pipe(
-        self,
-        command: str,
-        stderr_to_stdout: bool = False,
-        stderr_as_stdin: bool = False,
-    ) -> Shell:
-        self._add_args(
-            command,
-            fallback_stdout=subprocess.PIPE,
-            fallback_stderr=subprocess.PIPE,
-            stderr_to_stdout=stderr_to_stdout,
-            stderr_as_stdin=stderr_as_stdin,
-        )
-        return self
-
-    def input(self, data: str) -> Shell:
-        if self._args:
-            assert (
-                False
-            ), "Are you really trying to add an input in the middle of the pipe?"
-        self._input = data
-        return self
-
     @staticmethod
     def argv(index: int) -> str:
         if index >= len(sys.argv):
             return ""
         return sys.argv[index]
 
+    def _execute(self) -> Executor:
+        if self._input:
+            self._args[0].stdin = Stream.PIPE
+        return self._executor(self._args, self._input)
 
-@dataclass
-class FancyShell(Shell):
-    def fancy_reset(self) -> FancyShell:
+    def run(self) -> Shell:
+        if self._args:
+            self._execute().close()
+            self._args.clear()
         return self
 
-    @overload
-    def __or__(self, other: str) -> FancyShell:
-        ...
+    @contextmanager
+    def inject(self) -> Iterator[Popen]:
+        if not self._args:
+            raise RuntimeError(
+                "No commands found, pipe some commands and don't use run()"
+            )
+        self.pipe()
+        with self._execute():
+            self._args.clear()
+            yield self._executor._processes[-1]
 
-    @overload
-    def __or__(self, other: FancyShell) -> str:
-        ...
+    def __call__(
+        self,
+        command: str,
+        stdout: Stream = Stream.STDOUT,
+        stderr: Stream = Stream.STDERR,
+        stdin: Stream | None = None,
+    ) -> Shell:
+        """Adds command into the piped commands list.
 
-    def __or__(self, other):
+        `stdout` and `stderr` control where the process will write the data.
+
+        `stdin` controls where the process will read the data from.
+        `stdin` will be initialized (`default=None`) to `Stream.STDOUT`
+        if the command list is not empty.
+        """
+
+        # subprocess does not support changing writing target for other created stream
+        # and you don't really need it when you have that option for stderr
+        if stdout == Stream.STDERR:
+            raise ValueError("It's not possible to direct stdout into stderr")
+
+        if stdin is None and self._args:
+            stdin = Stream.STDOUT
+        elif stdin == Stream.PIPE and self._args:
+            raise ValueError(
+                "It's not possible to direct pipe into stdin for piped commands"
+            )
+        elif stdin in (Stream.STDOUT, Stream.STDERR) and not self._args:
+            raise ValueError(
+                "It's not possible to direct stdout or stderr into stdin"
+                " for the first piping command,"
+                " actual stdout and stderr are not readable"
+            )
+
+        self._args.append(
+            PopenArgs(
+                args=tuple([shlex.split(command)]),
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                kwargs=dict(encoding="utf-8", text=True),
+            )
+        )
+
+        return self
+
+    def pipe(self, fail: bool = True) -> Shell:
+        # sh("command1").pipe(**options)("command2").pipe("*options").run()
+        # sh("command1") | "command2" | sh.RUN
+
+        # sh("command1", out=x, err=y).pipe(**options)("command2", out=x, err=y).pipe("*options").run()
+        # sh("command1", out=x, err=y) | sh("command2", out=x, err=y) | sh.RUN
+
+        if len(self._args) != 0:
+            self._args[-1].stdout = Stream.PIPE
+        elif fail:
+            raise RuntimeError(
+                "No commands were found, try to add a command before piping"
+            )
+        return self
+
+    def __or__(self, other) -> Shell:
+        if other is RUN:
+            return self.run()
         if isinstance(other, str):
-            # one of the pipes
-            self.pipe(other)
-            return self
+            self.pipe(fail=False)
+            return self.__call__(other)
         if isinstance(other, type(self)):
-            # everything is done, clean up if the last was a pipe
-            self.fancy_reset()
-            return self.output
+            return self
+
         return NotImplemented
 
-    def __matmul__(self, other: str) -> FancyShell:
-        # the last one
-        self.run(other)
-        return self.fancy_reset()
-
-    def __rmatmul__(self, other: str) -> FancyShell:
-        # the last one
-        self.run(other)
-        return self.fancy_reset()
-
-    def __rrshift__(self, other: str) -> FancyShell:
-        self.input(other)
+    def input(self, data: str, can_override: bool = False) -> Shell:
+        if not can_override and self._args:
+            raise RuntimeError(
+                "It's not possible to input the data in the middle of the pipe"
+            )
+        self._input = data
         return self
+
+    def __rrshift__(self, other) -> Shell:
+        if isinstance(other, str):
+            return self.input(other, can_override=True)
+        return NotImplemented
+
+
+# @dataclass
+# class FancyShell(Shell):
+#     _sequence: list[str] = field(default_factory=list, init=False)
+#     _last_is_pipe: bool = field(default=True, init=False)
+
+#     def reset(self) -> None:
+#         self._sequence.clear()
+#         self._last_is_pipe = True
+
+#     def _run_sequence(self) -> None:
+#         for command in self._sequence[:-1]:
+#             self.pipe(command)
+
+#         if self._last_is_pipe:
+#             self.pipe(self._sequence[-1])
+#         else:
+#             self.run(self._sequence[-1])
+
+#     def __or__(self, other) -> FancyShell:
+#         if isinstance(other, str):
+#             # one of the pipes
+#             self._sequence.append(other)
+#             return self
+#         if isinstance(other, type(self)):
+#             # calculate the result
+#             self._run_sequence()
+#             self.reset()
+#             return self
+#         return NotImplemented
+
+#     def __rmatmul__(self, other) -> FancyShell:
+#         # the last one
+#         self._last_is_pipe = False
+#         self._sequence.append(other)
+#         return self
