@@ -268,12 +268,6 @@ class Shell:
         return self
 
     def pipe(self, fail: bool = True) -> Shell:
-        # sh("command1").pipe(**options)("command2").pipe("*options").run()
-        # sh("command1") | "command2" | sh.RUN
-
-        # sh("command1", out=x, err=y).pipe(**options)("command2", out=x, err=y).pipe("*options").run()
-        # sh("command1", out=x, err=y) | sh("command2", out=x, err=y) | sh.RUN
-
         if len(self._args) != 0:
             self._args[-1].stdout = Stream.PIPE
         elif fail:
@@ -305,40 +299,3 @@ class Shell:
         if isinstance(other, str):
             return self.input(other, can_override=True)
         return NotImplemented
-
-
-# @dataclass
-# class FancyShell(Shell):
-#     _sequence: list[str] = field(default_factory=list, init=False)
-#     _last_is_pipe: bool = field(default=True, init=False)
-
-#     def reset(self) -> None:
-#         self._sequence.clear()
-#         self._last_is_pipe = True
-
-#     def _run_sequence(self) -> None:
-#         for command in self._sequence[:-1]:
-#             self.pipe(command)
-
-#         if self._last_is_pipe:
-#             self.pipe(self._sequence[-1])
-#         else:
-#             self.run(self._sequence[-1])
-
-#     def __or__(self, other) -> FancyShell:
-#         if isinstance(other, str):
-#             # one of the pipes
-#             self._sequence.append(other)
-#             return self
-#         if isinstance(other, type(self)):
-#             # calculate the result
-#             self._run_sequence()
-#             self.reset()
-#             return self
-#         return NotImplemented
-
-#     def __rmatmul__(self, other) -> FancyShell:
-#         # the last one
-#         self._last_is_pipe = False
-#         self._sequence.append(other)
-#         return self
