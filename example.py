@@ -1,45 +1,40 @@
 import sys
 
-from shell import Shell, FancyShell
+from shell import RUN, Shell, Stream
 
-fs = FancyShell()
-shell = Shell()
-print(shell)
+sh = Shell()
+print(sh)
 exe = repr(sys.executable)
 
 # echo "Hello world!"
-shell.run('echo "Hello world!"')
-fs | 'echo "Hello world!"' @ fs
-fs @ 'echo "Hello world!"'
+sh('echo "Hello world!"').run()  # we will use RUN instead for the rest
+sh('echo "Hello world!"') | RUN
 
 # echo "SoMe WeIrd DaTa" | sha256sum
-shell.pipe('echo "SoMe WeIrd DaTa"').run("sha256sum")
-fs | 'echo "SoMe WeIrd DaTa"' | "sha256sum" @ fs
+sh('echo "SoMe WeIrd DaTa"') | "sha256sum" | RUN
 
 # sha256sum <<< "SoMe WeIrd DaTa"
-shell.input("SoMe WeIrd DaTa").run("sha256sum")
-"SoMe WeIrd DaTa" >> fs | "sha256sum" @ fs
-("SoMe WeIrd DaTa" >> fs) @ "sha256sum"  # if you use input + direct run you need prentices
+sh.input("SoMe WeIrd DaTa")("sha256sum") | RUN
+sh.input("SoMe WeIrd DaTa") | "sha256sum" | RUN
+"SoMe WeIrd DaTa" >> sh("sha256sum") | RUN
 
 # DATA_HASH=$(echo "SoMe WeIrd DaTa" | sha256sum)
 # or DATA_HASH=$(sha256sum <<< "SoMe WeIrd DaTa")
-data_hash = shell.input("SoMe WeIrd DaTa").pipe("sha256sum").output
-data_hash2 = "SoMe WeIrd DaTa" >> fs | "sha256sum" | fs
+data_hash = ("SoMe WeIrd DaTa" >> sh | "sha256sum").output
 
 # echo "Hash - $DATA_HASH"
 print(f"Hash - {data_hash}")
-print(f"Hash - {data_hash2}")
 
 # false || echo "It failed"
-shell.run("false") or print("It failed")
-fs @ ("false") or print("It failed")
+sh("false").run() or print("It failed")
+sh("false") | RUN or print("It failed")
 
 # true && echo "So true!"
-shell.run("true") and print("So true!")
-fs @ "true" and print("So true!")
+sh("true").run() and print("So true!")
+sh("true") | RUN and print("So true!")
 
 # false; echo $?
-print(shell.run("false").return_code)
+print(sh("false").return_code)  # will also run automatically for output, bool(sh), ...
 
 # if [[ $1 ]]; then
 #     exit 2
@@ -48,12 +43,12 @@ print(shell.run("false").return_code)
 #     $0 argument
 #     echo "Result - $?"
 # fi
-if shell.argv(1):
+if sh.argv(1):
     exit(2)
 else:
     print("Running!")
-    shell.run(f"'{exe}' {shell.argv(0)} argument")
-    print(f"Result - {shell.return_code}")
+    sh(f"'{exe}' {sh.argv(0)} argument") | RUN
+    print(f"Result - {sh.return_code}")
 
 # do_something_that_takes_a_lot_of_time & do_other_thing
 # parallel execution is currently not implemented
@@ -76,26 +71,19 @@ for _ in range(5):
 """
 
 # no buffering while piping fow arbitrary number of pipes
-# python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1
-shell.pipe(f'{exe} -u -c "{generator}"').run(f'{exe} -c "{echoer}" 1')
-fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' @ fs
+# python3 -u -c "$GENERATOR" | python3 -c "$ECHOER" 1
+sh(f'{exe} -u -c "{generator}"') | f'{exe} -c "{echoer}" 1' | RUN
 
-# python3.9 -u -c "$GENERATOR" | python3.9 -c "$ECHOER" 1 | python3.9 -c "$ECHOER" 2
-shell.pipe(f'{exe} -u -c "{generator}"').pipe(f'{exe} -c "{echoer}" 1').run(f'{exe} -c "{echoer}" 2')  # fmt: skip
-fs | f'{exe} -u -c "{generator}"' | f'{exe} -c "{echoer}" 1' | f'{exe} -c "{echoer}" 2' @ fs
+# python3 -u -c "$GENERATOR" | python3 -c "$ECHOER" 1 | python3 -c "$ECHOER" 2
+sh(f'{exe} -u -c "{generator}"') | f'{exe} -c "{echoer}" 1' | f'{exe} -c "{echoer}" 2' | RUN  # fmt: skip
 
-# read from the stdout by character
+# read from the stdout character by character
 # (I don't want to think about how to implement it in bash)
-shell.pipe(f'{exe} -u -c "{generator}"')
-with shell.inject() as process:
+sh(f'{exe} -u -c "{generator}"')
+with sh.inject() as process:
     while r := process.stdout.read(1):
         print(end=" " + r)
-    print("End!")
-fs | f'{exe} -u -c "{generator}"'
-with fs.inject() as process:
-    while r := process.stdout.read(1):
-        print(end=" " + r)
-    print("End!")
+    print("End!\n")
 
 std_out_n_err = """
 import sys
@@ -104,6 +92,7 @@ print('Out')
 """
 
 # python3 -c "$STD_OUT_N_ERR" 2>&1
-shell.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
-# currently now possible with fancy shell syntax
-fs.run(f'{exe} -c "{std_out_n_err}"', stderr_to_stdout=True)
+sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.STDOUT).run()
+
+# python3 -c "$STD_OUT_N_ERR" 2>&1
+sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.DEVNULL).run()
