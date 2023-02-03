@@ -85,7 +85,7 @@ with sh.inject() as process:
         print(end=" " + r)
     print("End!\n")
 
-std_out_n_err = """
+std_out_n_err = r"""
 import sys
 print('Err', file=sys.stderr)
 print('Out')
@@ -93,6 +93,15 @@ print('Out')
 
 # python3 -c "$STD_OUT_N_ERR" 2>&1
 sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.STDOUT).run()
+print("="*30)
 
-# python3 -c "$STD_OUT_N_ERR" 2>&1
+# python3 -c "$STD_OUT_N_ERR" &>/dev/null
 sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.DEVNULL).run()
+print("="*30)
+
+print_input = """
+print(f'Got {input()!r}')
+"""
+
+# python3 -c "$STD_OUT_N_ERR" | python3 -c "print(input())"
+sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.PIPE) | sh(f'{exe} -c "{print_input}"', stdin=Stream.STDERR) | RUN
