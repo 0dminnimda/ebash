@@ -25,6 +25,9 @@ data_hash = ("SoMe WeIrd DaTa" >> sh | "sha256sum").output
 # echo "Hash - $DATA_HASH"
 print(f"Hash - {data_hash}")
 
+# (cd somewhere/else)
+# spawning subshells is also not implemented - is there a need tho?
+
 # false || echo "It failed"
 sh("false").run() or print("It failed")
 sh("false") | RUN or print("It failed")
@@ -50,12 +53,6 @@ else:
     sh(f"'{exe}' {sh.argv(0)} argument") | RUN
     print(f"Result - {sh.return_code}")
 
-# do_something_that_takes_a_lot_of_time & do_other_thing
-# parallel execution is currently not implemented
-
-# (cd somewhere/else)
-# spawning subshells is also not implemented
-
 generator = """
 import time
 for i in range(5):
@@ -69,6 +66,13 @@ import time
 for _ in range(5):
     print(f'Echoer-{sys.argv[1]} got {input()!r} at {time.time()}')
 """
+
+# do_something_that_takes_a_lot_of_time & do_other_thing
+# sh(f'{exe} -u -c "{generator}"') & f'{exe} -u -c "{generator}"'
+# parallel execution is currently not implemented
+
+# prog1 & prog2 && fg
+# foreground / background are not implemented
 
 # no buffering while piping fow arbitrary number of pipes
 # python3 -u -c "$GENERATOR" | python3 -c "$ECHOER" 1
@@ -103,5 +107,5 @@ print_input = """
 print(f'Got {input()!r}')
 """
 
-# python3 -c "$STD_OUT_N_ERR" | python3 -c "print(input())"
+# python3 -c "$STD_OUT_N_ERR" 2>&1 >/dev/null | python3 -c "print(input())"
 sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.PIPE) | sh(f'{exe} -c "{print_input}"', stdin=Stream.STDERR) | RUN
