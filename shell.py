@@ -21,15 +21,16 @@ T1 = TypeVar("T1")
 T2 = TypeVar("T2")
 
 
+Process = Popen[str]
+
+
 Args = Iterable[T1]
 Kwargs = Dict[str, T2]
 
 
-# TODO: use param or something like that,
-# I don't like the "args" name clash
-# XXX: use dict so ot's easier to set kwargs
+# XXX: use dict so it's easier to set kwargs
 @dataclass
-class PopenArgs:
+class Params:
     args: Args
     stdin: Stream | None
     stdout: Stream
@@ -42,7 +43,7 @@ class Executor(ExitStack):
     return_code: int = field(default=0, init=False)
     stdout: str | None = field(default=None, init=False)
     stderr: str | None = field(default=None, init=False)
-    _processes: list[Popen] = field(default_factory=list, init=False, repr=False)
+    _processes: list[Process] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -55,7 +56,7 @@ class Executor(ExitStack):
         self.stderr = None
         self._processes = []
 
-    def prepare_params(self, params: PopenArgs) -> tuple[Args, Kwargs]:
+    def prepare_params(self, params: Params) -> tuple[Args, Kwargs]:
         stdin: object = None if params.stdin is None else params.stdin
         stdout: object = None if params.stdout == Stream.STDOUT else params.stdout
         stderr: object = None if params.stderr == Stream.STDERR else params.stderr
@@ -70,12 +71,14 @@ class Executor(ExitStack):
         params.kwargs.update(stderr=stderr)
         return params.args, params.kwargs
 
-    def make_popen(self, params: PopenArgs) -> Popen:
+    def make_popen(self, params: Params) -> Process:
         args, kwargs = self.prepare_params(params)
-        return self.enter_context(Popen(*args, **kwargs))
+        return self.enter_context(Process(*args, **kwargs))
 
     def execute(
-        self, params_list: list[PopenArgs], input: str | None = None
+        self,
+        params_list: list[Params],
+        input: str | None = None,
     ) -> Executor:
         if len(params_list) == 0:
             raise ValueError(
@@ -153,7 +156,7 @@ class Shell:
 
     _executor: Executor = field(default_factory=Executor, init=False, repr=False)
     _input: str | None = field(default=None, init=False, repr=False)
-    _args: list[PopenArgs] = field(default_factory=list, init=False, repr=False)
+    _args: list[Params] = field(default_factory=list, init=False, repr=False)
 
     def __repr__(self) -> str:
         names = ["return_code", "stdout", "stderr"]
@@ -211,7 +214,7 @@ class Shell:
         return self
 
     @contextmanager
-    def inject(self) -> Iterator[Popen]:
+    def inject(self) -> Iterator[Process]:
         if not self._args:
             raise RuntimeError(
                 "No commands found, pipe some commands and don't use run()"
@@ -256,7 +259,7 @@ class Shell:
             )
 
         self._args.append(
-            PopenArgs(
+            Params(
                 args=tuple([shlex.split(command)]),
                 stdin=stdin,
                 stdout=stdout,
