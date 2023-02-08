@@ -125,6 +125,20 @@ class Executor(ExitStack):
 
         os.write(proc.stdin.fileno(), input.encode(self.encoding))
 
+    def read_stdout(self, n: int = 2**32) -> str:
+        proc = self._processes[-1]
+        if not proc.stdout:
+            raise ValueError("stdout is not set")
+
+        return os.read(proc.stdout.fileno(), n).decode(self.encoding)
+
+    def read_stderr(self, n: int = 2**32) -> str:
+        proc = self._processes[-1]
+        if not proc.stderr:
+            raise ValueError("stderr is not set")
+
+        return os.read(proc.stderr.fileno(), n).decode(self.encoding)
+
     def __enter__(self):
         return super().__enter__()
 
