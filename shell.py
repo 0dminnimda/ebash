@@ -81,6 +81,7 @@ class Executor(ExitStack):
         self,
         params_list: list[Params],
         input: str | None = None,
+        close_stdin: bool = True,
         encoding: str = "utf-8",
     ) -> Executor:
         if len(params_list) == 0:
@@ -110,7 +111,7 @@ class Executor(ExitStack):
             self._processes.append(self.make_popen(params))
 
         self.write(input)
-        if self._processes[0].stdin:
+        if close_stdin and self._processes[0].stdin:
             self._processes[0].stdin.close()
         return self
 
@@ -234,10 +235,10 @@ class Shell:
             return ""
         return sys.argv[index]
 
-    def _execute(self) -> Executor:
+    def _execute(self, close_stdin: bool = True) -> Executor:
         if self._input:
             self._args[0].stdin = Stream.PIPE
-        self._executor.execute(self._args, self._input, encoding="utf-8")
+        self._executor.execute(self._args, self._input, close_stdin, encoding="utf-8")
         return self._executor
 
     def run(self) -> Shell:
@@ -247,13 +248,13 @@ class Shell:
         return self
 
     @contextmanager
-    def inject(self):  # -> Iterator[tuple[]]:
+    def inject(self, close_stdin: bool = True):  # -> Iterator[tuple[]]:
         if not self._args:
             raise RuntimeError(
                 "No commands found, pipe some commands and don't use run()"
             )
         self.pipe()
-        with self._execute():
+        with self._execute(close_stdin):
             self._args.clear()
             yield (
                 self._executor.write,
