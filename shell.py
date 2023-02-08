@@ -239,6 +239,7 @@ class Shell:
         if self._input:
             self._args[0].stdin = Stream.PIPE
         self._executor.execute(self._args, self._input, close_stdin, encoding="utf-8")
+        self._input = None
         return self._executor
 
     def run(self) -> Shell:
@@ -253,7 +254,6 @@ class Shell:
             raise RuntimeError(
                 "No commands found, pipe some commands and don't use run()"
             )
-        self.pipe()
         with self._execute(close_stdin):
             self._args.clear()
             yield (
