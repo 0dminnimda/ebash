@@ -246,7 +246,7 @@ class Shell:
         return self
 
     @contextmanager
-    def inject(self) -> Iterator[Process]:
+    def inject(self):  # -> Iterator[tuple[]]:
         if not self._args:
             raise RuntimeError(
                 "No commands found, pipe some commands and don't use run()"
@@ -254,7 +254,11 @@ class Shell:
         self.pipe()
         with self._execute():
             self._args.clear()
-            yield self._executor._processes[-1]
+            yield (
+                self._executor.write,
+                self._executor.read_stdout,
+                self._executor.read_stderr,
+            )
 
     def __call__(
         self,
