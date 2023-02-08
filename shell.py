@@ -144,6 +144,8 @@ class Executor(ExitStack):
 
     def __exit__(self, *exc_details):
         try:
+            if self._processes[0].stdin:
+                self._processes[0].stdin.close()
             if self._processes[-1].stdout:
                 self.stdout = self._processes[-1].stdout.read().decode(self.encoding)
                 self._processes[-1].stdout.close()
