@@ -141,6 +141,20 @@ class Executor(ExitStack):
 
         return os.read(proc.stderr.fileno(), n).decode(self.encoding)
 
+    def get_output(self) -> tuple[str | None, str | None]:
+        stdout = self._processes[-1].stdout
+        stderr = self._processes[-1].stderr
+
+        out = stdout.read().decode(self.encoding) if stdout else None
+        err = stderr.read().decode(self.encoding) if stderr else None
+
+        # XXX: should this condition be here?
+        # should executor also try to imitate shell and not just wrap subprocess?
+        if out and out.endswith("\n"):
+            out = out[:-1]
+
+        return out, err
+
     def __enter__(self):
         return super().__enter__()
 
@@ -149,10 +163,8 @@ class Executor(ExitStack):
             if self._processes[0].stdin:
                 self._processes[0].stdin.close()
             if self._processes[-1].stdout:
-                self.stdout = self._processes[-1].stdout.read().decode(self.encoding)
                 self._processes[-1].stdout.close()
             elif self._processes[-1].stderr:
-                self.stdout = self._processes[-1].stderr.read().decode(self.encoding)
                 self._processes[-1].stderr.close()
             self._processes[-1].wait()
         except:  # noqa # Including KeyboardInterrupt, communicate handled that.
@@ -162,11 +174,6 @@ class Executor(ExitStack):
             raise
 
         self.return_code = self._processes[-1].poll() or 0
-
-        # XXX: should this condition be here?
-        # should executor also try to imitate shell and not just wrap subprocess?
-        if self.stdout and self.stdout.endswith("\n"):
-            self.stdout = self.stdout[:-1]
 
         self._processes.clear()
         return super().__exit__(*exc_details)
@@ -187,6 +194,9 @@ class Shell:
     Author: 0dminnimda
     """
 
+    _return_code: int = field(default=0, init=False)
+    _stdout: str | None = field(default=None, init=False)
+    _stderr: str | None = field(default=None, init=False)
     _executor: Executor = field(default_factory=Executor, init=False, repr=False)
     _input: str | None = field(default=None, init=False, repr=False)
     _args: list[Params] = field(default_factory=list, init=False, repr=False)
@@ -198,21 +208,18 @@ class Shell:
 
     @property
     def return_code(self):
-        self.pipe(fail=False)
-        self.run()
-        return self._executor.return_code
+        self.pipe(fail=False).run()
+        return self._return_code
 
     @property
     def stdout(self):
-        self.pipe(fail=False)
-        self.run()
-        return self._executor.stdout
+        self.pipe(fail=False).run()
+        return self._stdout
 
     @property
     def stderr(self):
-        self.pipe(fail=False)
-        self.run()
-        return self._executor.stderr
+        self.pipe(fail=False).run()
+        return self._stderr
 
     @property
     def output(self) -> str:
@@ -244,7 +251,9 @@ class Shell:
 
     def run(self) -> Shell:
         if self._args:
-            self._execute().close()
+            with self._execute():
+                self._stdout, self._stderr = self._executor.get_output()
+            self._return_code = self._executor.return_code
             self._args.clear()
         return self
 
@@ -261,6 +270,8 @@ class Shell:
                 self._executor.read_stdout,
                 self._executor.read_stderr,
             )
+            self._stdout, self._stderr = self._executor.get_output()
+        self._return_code = self._executor.return_code
 
     def __call__(
         self,
