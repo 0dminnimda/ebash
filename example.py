@@ -84,8 +84,8 @@ sh(f'{exe} -u -c "{generator}"') | f'{exe} -c "{echoer}" 1' | f'{exe} -c "{echoe
 # read from the stdout character by character
 # (I don't want to think about how to implement it in bash)
 sh(f'{exe} -u -c "{generator}"')
-with sh.inject() as process:
-    while r := process.stdout.read(1):
+with sh.pipe().inject() as (inp, out, err):
+    while r := out(1):
         print(end=" " + r)
     print("End!\n")
 
