@@ -89,23 +89,47 @@ with sh.pipe().inject() as (inp, out, err):
         print(end=" " + r)
     print("End!\n")
 
+dialog = """
+for i in range(int(input())):
+    print(2**int(input()))
+"""
+
+# have a dialog with the program
+# (I don't want to think about how to implement it in bash)
+sh(f'{exe} -u -c "{dialog}"', stdin=Stream.PIPE)
+with sh.pipe().inject(close_stdin=False) as (inp, out, err):
+    num = 5
+    inp(f"{num}\n")
+    for i in range(num):
+        inp(f"{i}\n")
+
+        line = ""
+        while (r := out(1)) and r != "\n":
+            line += r
+        answer = int(line)
+
+        print(f"Got: {answer}, answer: {2**i}")
+        assert answer == 2**i
+
 std_out_n_err = r"""
 import sys
 print('Err', file=sys.stderr)
 print('Out')
 """
 
+print("=" * 30)
 # python3 -c "$STD_OUT_N_ERR" 2>&1
 sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.STDOUT).run()
-print("="*30)
 
+print("=" * 30)
 # python3 -c "$STD_OUT_N_ERR" &>/dev/null
 sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.DEVNULL).run()
-print("="*30)
 
 print_input = """
 print(f'Got {input()!r}')
 """
 
+print("=" * 30)
 # python3 -c "$STD_OUT_N_ERR" 2>&1 >/dev/null | python3 -c "print(input())"
-sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.PIPE) | sh(f'{exe} -c "{print_input}"', stdin=Stream.STDERR) | RUN
+sh(f'{exe} -c "{std_out_n_err}"', stderr=Stream.PIPE) | sh(f'{exe} -c "{print_input}"', stdin=Stream.STDERR) | RUN  # fmt: skip
+print("=" * 30)
