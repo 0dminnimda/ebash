@@ -8,7 +8,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from subprocess import Popen
-from typing import Dict, Iterable, Iterator, TypeVar
+from typing import IO, Dict, Iterable, Iterator, TypeVar
 
 
 class Stream(Enum):
@@ -42,10 +42,11 @@ class Params:
 @dataclass
 class Executor(ExitStack):
     return_code: int = field(default=0, init=False)
-    stdout: str | None = field(default=None, init=False)
-    stderr: str | None = field(default=None, init=False)
+    encoding: str = field(init=False)
+    _stdin: IO[bytes] | None = field(default=None, init=False, repr=False)
+    _stdout: IO[bytes] | None = field(default=None, init=False, repr=False)
+    _stderr: IO[bytes] | None = field(default=None, init=False, repr=False)
     _processes: list[Process] = field(default_factory=list, init=False, repr=False)
-    encoding: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -54,8 +55,9 @@ class Executor(ExitStack):
         if len(self._processes) != 0:
             self.close()
         self.return_code = 0
-        self.stdout = None
-        self.stderr = None
+        self._stdin = None
+        self._stdout = None
+        self._stderr = None
         self._processes = []
 
     def prepare_params(self, params: Params) -> tuple[Args, Kwargs]:
@@ -110,9 +112,13 @@ class Executor(ExitStack):
                 )
             self._processes.append(self.make_popen(params))
 
+        self._stdin = self._processes[0].stdin
+        self._stdout = self._processes[-1].stdout
+        self._stderr = self._processes[-1].stderr
+
         self.write(input)
-        if close_stdin and self._processes[0].stdin:
-            self._processes[0].stdin.close()
+        if close_stdin and self._stdin:
+            self._stdin.close()
         return self
 
     __call__ = execute
@@ -121,32 +127,26 @@ class Executor(ExitStack):
         if not input:
             return
 
-        proc = self._processes[0]
-        if not proc.stdin:
+        if not self._stdin:
             raise ValueError("stdin is not set")
 
-        os.write(proc.stdin.fileno(), input.encode(self.encoding))
+        os.write(self._stdin.fileno(), input.encode(self.encoding))
 
     def read_stdout(self, n: int = 2**32) -> str:
-        proc = self._processes[-1]
-        if not proc.stdout:
+        if not self._stdout:
             raise ValueError("stdout is not set")
 
-        return os.read(proc.stdout.fileno(), n).decode(self.encoding)
+        return os.read(self._stdout.fileno(), n).decode(self.encoding)
 
     def read_stderr(self, n: int = 2**32) -> str:
-        proc = self._processes[-1]
-        if not proc.stderr:
+        if not self._stderr:
             raise ValueError("stderr is not set")
 
-        return os.read(proc.stderr.fileno(), n).decode(self.encoding)
+        return os.read(self._stderr.fileno(), n).decode(self.encoding)
 
     def get_output(self) -> tuple[str | None, str | None]:
-        stdout = self._processes[-1].stdout
-        stderr = self._processes[-1].stderr
-
-        out = stdout.read().decode(self.encoding) if stdout else None
-        err = stderr.read().decode(self.encoding) if stderr else None
+        out = self._stdout.read().decode(self.encoding) if self._stdout else None
+        err = self._stderr.read().decode(self.encoding) if self._stderr else None
 
         # XXX: should this condition be here?
         # should executor also try to imitate shell and not just wrap subprocess?
@@ -160,12 +160,12 @@ class Executor(ExitStack):
 
     def __exit__(self, *exc_details):
         try:
-            if self._processes[0].stdin:
-                self._processes[0].stdin.close()
-            if self._processes[-1].stdout:
-                self._processes[-1].stdout.close()
-            elif self._processes[-1].stderr:
-                self._processes[-1].stderr.close()
+            if self._stdin:
+                self._stdin.close()
+            if self._stdout:
+                self._stdout.close()
+            elif self._stderr:
+                self._stderr.close()
             self._processes[-1].wait()
         except:  # noqa # Including KeyboardInterrupt, communicate handled that.
             for process in self._processes:
