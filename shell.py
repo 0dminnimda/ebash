@@ -21,7 +21,7 @@ T1 = TypeVar("T1")
 T2 = TypeVar("T2")
 
 
-Process = Popen[str]
+Process = Popen[bytes]
 
 
 Args = Iterable[T1]
@@ -44,6 +44,7 @@ class Executor(ExitStack):
     stdout: str | None = field(default=None, init=False)
     stderr: str | None = field(default=None, init=False)
     _processes: list[Process] = field(default_factory=list, init=False, repr=False)
+    encoding: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -79,12 +80,15 @@ class Executor(ExitStack):
         self,
         params_list: list[Params],
         input: str | None = None,
+        encoding: str = "utf-8",
     ) -> Executor:
         if len(params_list) == 0:
             raise ValueError(
                 "No parameters were found, you should supply at least one parameter"
             )
         self.reset()
+
+        self.encoding = encoding
 
         params = params_list[0]
         if input is not None and params.stdin != Stream.PIPE:
@@ -104,11 +108,22 @@ class Executor(ExitStack):
                 )
             self._processes.append(self.make_popen(params))
 
+        self.write(input)
         if self._processes[0].stdin:
-            self._processes[0]._stdin_write(input)  # type: ignore[attr-defined]
+            self._processes[0].stdin.close()
         return self
 
     __call__ = execute
+
+    def write(self, input: str | None) -> None:
+        if not input:
+            return
+
+        proc = self._processes[0]
+        if not proc.stdin:
+            raise ValueError("stdin is not set")
+
+        os.write(proc.stdin.fileno(), input.encode(self.encoding))
 
     def __enter__(self):
         return super().__enter__()
@@ -116,10 +131,10 @@ class Executor(ExitStack):
     def __exit__(self, *exc_details):
         try:
             if self._processes[-1].stdout:
-                self.stdout = self._processes[-1].stdout.read()
+                self.stdout = self._processes[-1].stdout.read().decode(self.encoding)
                 self._processes[-1].stdout.close()
             elif self._processes[-1].stderr:
-                self.stderr = self._processes[-1].stderr.read()
+                self.stdout = self._processes[-1].stderr.read().decode(self.encoding)
                 self._processes[-1].stderr.close()
             self._processes[-1].wait()
         except:  # noqa # Including KeyboardInterrupt, communicate handled that.
@@ -205,7 +220,8 @@ class Shell:
     def _execute(self) -> Executor:
         if self._input:
             self._args[0].stdin = Stream.PIPE
-        return self._executor(self._args, self._input)
+        self._executor.execute(self._args, self._input, encoding="utf-8")
+        return self._executor
 
     def run(self) -> Shell:
         if self._args:
@@ -264,7 +280,7 @@ class Shell:
                 stdin=stdin,
                 stdout=stdout,
                 stderr=stderr,
-                kwargs=dict(encoding="utf-8", text=True),
+                kwargs=dict(),
             )
         )
 
