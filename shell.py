@@ -230,9 +230,9 @@ class Shell:
         return bool(self)
 
     @staticmethod
-    def argv(index: int) -> str:
+    def argv(index: int, default: str = "") -> str:
         if index >= len(sys.argv):
-            return ""
+            return default
         return sys.argv[index]
 
     def _execute(self, close_stdin: bool = True) -> Executor:
