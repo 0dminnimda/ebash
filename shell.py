@@ -170,7 +170,7 @@ class Executor(ExitStack):
         except:  # noqa # Including KeyboardInterrupt, communicate handled that.
             for process in self._processes:
                 process.kill()
-                # We don't call process.wait() as .__exit__ does that for us.
+                # We don't call process.wait() as super().__exit__ does that for us.
             raise
 
         self.return_code = self._processes[-1].poll() or 0
