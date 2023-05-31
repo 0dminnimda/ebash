@@ -1,3 +1,13 @@
+# Copyright (c) 2023 0dminnimda <0dminnimda.contact@gmail.com>.
+# All rights reserved.
+
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of the full source code tree.
+# Full source code available at: <https://github.com/0dminnimda/ebash>
+
+# The above notice shall be included in all
+# copies or substantial portions of the Software.
+
 from __future__ import annotations
 
 import os
